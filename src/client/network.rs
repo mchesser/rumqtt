@@ -212,6 +212,85 @@ mod stream {
     impl NetworkStream {}
 }
 
+#[cfg(not(any(feature = "rustls", feature = "nativetls")))]
+pub mod stream {
+    #![allow(unused_variables, unused_mut)]
+
+    use crate::client::network::lookup_ipv4;
+    use crate::codec::MqttCodec;
+    use crate::error::ConnectError;
+    use futures::{future::self, stream::Stream, Future};
+    use std::io;
+    use tokio::{io::AsyncRead, net::TcpStream};
+    use tokio_codec::{Decoder, Framed};
+
+    pub enum NetworkStream {
+        Tcp(TcpStream),
+        Tls(TcpStream),
+    }
+
+    impl NetworkStream {
+        pub fn builder() -> NetworkStreamBuilder {
+            NetworkStreamBuilder {}
+        }
+    }
+
+    pub struct NetworkStreamBuilder {
+    }
+
+    impl NetworkStreamBuilder {
+        pub fn add_certificate_authority(mut self, ca: &[u8]) -> NetworkStreamBuilder {
+            unimplemented!()
+        }
+
+        pub fn add_client_auth(mut self, cert: &[u8], private_key: &[u8]) -> NetworkStreamBuilder {
+            unimplemented!()
+        }
+
+        pub fn set_http_proxy(
+            mut self,
+            id: &str,
+            proxy_host: &str,
+            proxy_port: u16,
+            key: &[u8],
+            expiry: i64,
+        ) -> NetworkStreamBuilder {
+            unimplemented!()
+        }
+
+        pub fn http_connect(
+            &self,
+            id: &str,
+            proxy_host: &str,
+            proxy_port: u16,
+            host: &str,
+            port: u16,
+            key: &[u8],
+            expiry: i64,
+        ) -> ! {
+            unimplemented!()
+        }
+
+        pub fn tcp_connect(&self, host: &str, port: u16) -> impl Future<Item = TcpStream, Error = io::Error> {
+            let addr = lookup_ipv4(host, port);
+            TcpStream::connect(&addr)
+        }
+
+        pub fn connect(
+            mut self,
+            host: &str,
+            port: u16,
+        ) -> impl Future<Item = Framed<NetworkStream, MqttCodec>, Error = ConnectError> {
+            self.tcp_connect(host, port)
+                .and_then(|stream| {
+                    let stream = NetworkStream::Tcp(stream);
+                    future::ok(MqttCodec.framed(stream))
+                })
+                .map_err(ConnectError::from)
+        }
+    }
+}
+
 fn lookup_ipv4(host: &str, port: u16) -> SocketAddr {
     use std::net::ToSocketAddrs;
 
@@ -225,6 +304,7 @@ fn lookup_ipv4(host: &str, port: u16) -> SocketAddr {
     unreachable!("Cannot lookup address");
 }
 
+#[cfg(any(feature = "rustls", feature = "nativetls"))]
 fn generate_httpproxy_auth(id: &str, key: &[u8], expiry: i64) -> String {
     use chrono::{Duration, Utc};
     use jsonwebtoken::{encode, Algorithm, Header};
