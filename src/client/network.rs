@@ -294,7 +294,11 @@ pub mod stream {
 
         pub fn tcp_connect(&self, host: &str, port: u16) -> impl Future<Item = TcpStream, Error = io::Error> {
             let addr = lookup_ipv4(host, port);
-            TcpStream::connect(&addr)
+            let addr = future::result(addr);
+
+            addr.and_then(|addr| {
+                TcpStream::connect(&addr)
+            })
         }
 
         pub fn connect(
