@@ -1,6 +1,5 @@
-use crate::error::ConnectError;
-use mqtt311::{Connect, LastWill, Protocol};
-use serde_derive::{Deserialize, Serialize};
+//! Options to set mqtt client behaviour
+use mqtt311::LastWill;
 use std::time::Duration;
 
 /// Control how the connection is re-established if it is lost.
@@ -8,14 +7,13 @@ use std::time::Duration;
 pub enum ReconnectOptions {
     /// Don't automatically reconnect
     Never,
-    /// Reconnect automatically if the connection has been established
-    /// successfully at least once.
+    /// Reconnect automatically if the initial connection was successful.
     ///
-    /// Before a reconnection attempt, sleep for the specified amount of seconds.
+    /// Before a reconnection attempt, sleep for the specified amount of time (in seconds).
     AfterFirstSuccess(u64),
     /// Always reconnect automatically.
     ///
-    /// Before a reconnection attempt, sleep for the specified amount of seconds.
+    /// Before a reconnection attempt, sleep for the specified amount of time (in seconds).
     Always(u64),
 }
 
@@ -34,19 +32,23 @@ pub enum SecurityOptions {
 
 #[derive(Clone, Debug)]
 pub enum ConnectionMethod {
+    /// Plain text connection
     Tcp,
-    // ca and, optionally, a pair of client cert and client key
+    /// Encrypted connection. (ca data, optional client cert and key data)
     Tls(Vec<u8>, Option<(Vec<u8>, Vec<u8>)>),
 }
 
+/// Mqtt through http proxy
 #[derive(Clone, Debug)]
 pub enum Proxy {
+    /// No tunnel
     None,
-    /// Option to tunnel through http connect.
+    /// Tunnel through a proxy using http connect.
     /// (Proxy name, Port, priave_key.der to sign jwt, Expiry in seconds)
     HttpConnect(String, u16, Vec<u8>, i64),
 }
 
+/// Mqtt options
 #[derive(Clone, Debug)]
 pub struct MqttOptions {
     /// broker address that you want to connect to
@@ -70,6 +72,14 @@ pub struct MqttOptions {
     max_packet_size: usize,
     /// last will and testament
     last_will: Option<LastWill>,
+    /// request (publish, subscribe) channel capacity
+    request_channel_capacity: usize,
+    /// notification channel capacity
+    notification_channel_capacity: usize,
+    /// rate limit for outgoing messages (no. of messages per second)
+    outgoing_ratelimit: Option<u64>,
+    /// rate limit applied after queue size limit (size, sleep time after every message)
+    outgoing_queuelimit: (usize, Duration)
 }
 
 impl Default for MqttOptions {
@@ -86,11 +96,16 @@ impl Default for MqttOptions {
             security: SecurityOptions::None,
             max_packet_size: 256 * 1024,
             last_will: None,
+            request_channel_capacity: 10,
+            notification_channel_capacity: 10,
+            outgoing_ratelimit: None,
+            outgoing_queuelimit: (100, Duration::from_secs(3)),
         }
     }
 }
 
 impl MqttOptions {
+    /// New mqtt options
     pub fn new<S: Into<String>, T: Into<String>>(id: S, host: T, port: u16) -> MqttOptions {
         // TODO: Validate if addr is proper address type
         let id = id.into();
@@ -110,9 +125,14 @@ impl MqttOptions {
             security: SecurityOptions::None,
             max_packet_size: 256 * 1024,
             last_will: None,
+            request_channel_capacity: 10,
+            notification_channel_capacity: 10,
+            outgoing_ratelimit: None,
+            outgoing_queuelimit: (100, Duration::from_secs(3)),
         }
     }
 
+    /// Broker address
     pub fn broker_address(&self) -> (String, u16) {
         (self.broker_addr.clone(), self.port)
     }
@@ -128,10 +148,12 @@ impl MqttOptions {
         self
     }
 
+    /// Keep alive time
     pub fn keep_alive(&self) -> Duration {
         self.keep_alive
     }
 
+    /// Client identifier
     pub fn client_id(&self) -> String {
         self.client_id.clone()
     }
@@ -142,6 +164,7 @@ impl MqttOptions {
         self
     }
 
+    /// Maximum packet size
     pub fn max_packet_size(&self) -> usize {
         self.max_packet_size
     }
@@ -152,18 +175,17 @@ impl MqttOptions {
     /// When set `false`, broker will hold the client state and performs pending
     /// operations on the client when reconnection with same `client_id`
     /// happens. Local queue state is also held to retransmit packets after reconnection.
-    ///
-    /// So **make sure that you manually set `client_id` when `clean_session` is false**
     pub fn set_clean_session(mut self, clean_session: bool) -> Self {
         self.clean_session = clean_session;
         self
     }
 
+    /// Clean session
     pub fn clean_session(&self) -> bool {
         self.clean_session
     }
 
-    /// Set how to connect to a MQTT Broker (either plain TCP or SSL)
+    /// Set how to connect to a MQTT Broker (either TCP or Tls)
     pub fn set_connection_method(mut self, opts: ConnectionMethod) -> Self {
         self.connection_method = opts;
         self
@@ -189,6 +211,7 @@ impl MqttOptions {
         self
     }
 
+    /// Reconnection options
     pub fn reconnect_opts(&self) -> ReconnectOptions {
         self.reconnect
     }
@@ -200,93 +223,74 @@ impl MqttOptions {
         self
     }
 
+    /// Security options
+    pub fn security_opts(&self) -> SecurityOptions {
+        self.security.clone()
+    }
+
     /// Set last will and testament
     pub fn set_last_will(mut self, last_will: LastWill) -> Self {
         self.last_will = Some(last_will);
         self
     }
 
-    /// Clear last will and testament
-    pub fn clear_last_will(mut self) -> Self {
-        self.last_will = None;
+    /// Last will and testament
+    pub fn last_will(&self) -> Option<mqtt311::LastWill> {
+        self.last_will.clone()
+    }
+
+    /// Set notification channel capacity
+    pub fn set_notification_channel_capacity(mut self, capacity: usize) -> Self {
+        self.notification_channel_capacity = capacity;
         self
     }
 
-    pub fn connect_packet(&self) -> Result<Connect, ConnectError> {
-        let (username, password) = match self.security.clone() {
-            SecurityOptions::UsernamePassword(username, password) => (Some(username), Some(password)),
-            #[cfg(feature = "jwt")]
-            SecurityOptions::GcloudIot(projectname, key, expiry) => {
-                let username = Some("unused".to_owned());
-                let password = Some(gen_iotcore_password(projectname, &key, expiry)?);
-                (username, password)
-            }
-            SecurityOptions::None => (None, None),
-        };
-
-        let connect = Connect {
-            protocol: Protocol::MQTT(4),
-            keep_alive: self.keep_alive.as_secs() as u16,
-            client_id: self.client_id.clone(),
-            clean_session: self.clean_session,
-            last_will: self.last_will.clone(),
-            username,
-            password,
-        };
-
-        Ok(connect)
+    /// Notification channel capacity
+    pub fn notification_channel_capacity(&self) -> usize {
+        self.notification_channel_capacity
     }
-}
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Claims {
-    iat: i64,
-    exp: i64,
-    aud: String,
-}
+    /// Set request channel capacity
+    pub fn set_request_channel_capacity(mut self, capacity: usize) -> Self {
+        self.request_channel_capacity = capacity;
+        self
+    }
 
-#[cfg(feature = "jwt")]
-// Generates a new password for mqtt client authentication
-pub fn gen_iotcore_password(project: String, key: &[u8], expiry: i64) -> Result<String, ConnectError> {
-    use chrono::{self, Utc};
-    use jsonwebtoken::{encode, Algorithm, Header};
+    /// Request channel capacity
+    pub fn request_channel_capacity(&self) -> usize {
+        self.request_channel_capacity
+    }
+    
+    /// Enables throttling and sets outoing message rate to the specified 'rate'
+    pub fn set_outgoing_ratelimit(mut self, rate: u64) -> Self {
+        if rate == 0 {
+            panic!("zero rate is not allowed");
+        }
 
-    let time = Utc::now();
-    let jwt_header = Header::new(Algorithm::RS256);
-    let iat = time.timestamp();
-    let exp = time
-        .checked_add_signed(chrono::Duration::minutes(expiry))
-        .expect("Unable to create expiry")
-        .timestamp();
+        self.outgoing_ratelimit = Some(rate);
+        self
+    }
 
-    let claims = Claims { iat, exp, aud: project };
+    /// Outgoing message rate
+    pub fn outgoing_ratelimit(&self) -> Option<u64> {
+        self.outgoing_ratelimit
+    }
 
-    Ok(encode(&jwt_header, &claims, &key)?)
-}
+    /// Sleeps for the 'delay' about of time before sending the next message if the 
+    /// specified 'queue_size's are hit
+    pub fn set_outgoing_queuelimit(mut self, queue_size: usize, delay: Duration) -> Self {
+        if queue_size == 0 {
+            panic!("zero queue size is not allowed")
+        }
 
-//TODO: Rename feature 'jwt' to 'iotcore' & 'httpconnectproxy"
-#[cfg(feature = "jwt")]
-pub fn gen_httpproxy_auth(id: &str, key: &[u8], expiry: i64) -> Result<String, ConnectError> {
-    use chrono::{Duration, Utc};
-    use jsonwebtoken::{encode, Algorithm, Header};
+        self.outgoing_queuelimit = (queue_size, delay);
+        self
+    }
 
-    let time = Utc::now();
-    let jwt_header = Header::new(Algorithm::RS256);
-    let iat = time.timestamp();
-    let exp = time
-        .checked_add_signed(Duration::minutes(expiry))
-        .expect("Unable to create expiry")
-        .timestamp();
-
-    let claims = Claims {
-        iat,
-        exp,
-        aud: "hello world".to_string(),
-    };
-    let jwt = encode(&jwt_header, &claims, key).unwrap();
-    let auth = format!("Auth {}:{}", id, jwt);
-
-    Ok(base64::encode(auth.as_bytes()))
+    /// Outgoing queue limit
+    pub fn outgoing_queuelimit(&self) -> (usize, Duration) {
+        self.outgoing_queuelimit
+    }
 }
 
 #[cfg(test)]

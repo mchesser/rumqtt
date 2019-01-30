@@ -1,3 +1,4 @@
+//! All errors
 use crate::client::{Command, Request};
 use crossbeam_channel::RecvError;
 use derive_more::From;
@@ -80,6 +81,8 @@ pub enum NetworkError {
     UserDisconnect,
     #[fail(display = "Network stream closed")]
     NetworkStreamClosed,
+    #[fail(display = "Throttle error while rate limiting")]
+    Throttle,
     #[fail(display = "Dummy error for converting () to network error")]
     Blah,
 }

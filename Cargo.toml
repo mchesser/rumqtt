@@ -1,11 +1,14 @@
 [package]
 name = "rumqtt"
-version = "0.30.0"
-authors = ["raviteja <k.teza1@gmail.com>"]
+description = "Mqtt client for your IOT needs"
+version = "0.30.1"
+authors = ["raviteja <mail@raviteja.tech"]
+documentation = "https://docs.rs/rumqtt"
 edition = "2018"
+license = "Unlicense"
 
 [dependencies]
-tokio = "0.1"
+tokio = "^0.1.9"
 tokio-timer = "0.2.7"
 tokio-io = "0.1"
 tokio-codec = "0.1"
@@ -17,7 +20,7 @@ failure = { version = "0.1", default-features = false, features = ["derive"] }
 derive_more = "0.13"
 base64 = "0.10"
 uuid = {version = "0.7", features = ["serde", "v4"]}
-mqtt311 = { git = "https://github.com/tekjar/mqtt311" }
+mqtt311 = "0.2"
 
 [dependencies.native-tls]
 version = "0.2"
